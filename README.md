@@ -1,74 +1,74 @@
 # Banking Backend
 
-Separate demo banking backend.
+Client-facing demo banking backend.
 
-This service is not the payment processing system. It works as a client-facing backend:
+This service is separate from `PaymentOperations`. It stores banking clients, phone-based accounts, and transfer records in PostgreSQL, then calls `PaymentOperations` to conduct the payment operation.
 
-- registers demo clients;
-- creates demo accounts;
-- shows account balance;
-- creates transfers;
-- calls `PaymentOperations`;
-- checks payment status;
-- cancels payment before final status.
+## Data Model
+
+- `bank_clients` - mock banking clients with phone and PIN.
+- `bank_accounts` - accounts linked to phone numbers and bank codes.
+- `bank_transfers` - transfer records with status from `PaymentOperations`.
+
+Seed users are created automatically on startup:
+
+| Phone | PIN | Bank |
+|---|---:|---|
+| `+996700111222` | `1111` | `CITY` |
+| `+996700333444` | `2222` | `CITY`, `NOVA` |
+| `+996700555666` | `3333` | `NOVA` |
 
 ## Run
 
-First run `PaymentOperations` on port `8080`.
-
-Then run this service:
+Run `PaymentOperations` first, then run this service with PostgreSQL:
 
 ```bash
 cd /Users/amirhanordobaev/Downloads/BankingBackend
 ./gradlew stage
-PAYMENT_SERVICE_URL=http://localhost:8080 build/install/BankingBackend/bin/BankingBackend
+PGHOST=localhost PGPORT=55432 PGDATABASE=banking PGUSER=banking PGPASSWORD=banking \
+PAYMENT_SERVICE_URL=http://localhost:8080 \
+build/install/BankingBackend/bin/BankingBackend
 ```
 
-Banking backend URL:
-
-```text
-http://localhost:8090
-```
+On Heroku, `DATABASE_URL` is provided by Heroku Postgres.
 
 ## API
 
-Register client:
+Login:
 
 ```bash
-curl -X POST http://localhost:8090/clients/register \
+curl -X POST http://localhost:8090/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"clientName":"Aidar"}'
+  -d '{"phone":"+996700111222","pin":"1111"}'
 ```
 
-Get accounts:
-
-```bash
-curl http://localhost:8090/clients/client-a/accounts
-```
-
-Create transfer:
+Internal transfer by phone:
 
 ```bash
 curl -X POST http://localhost:8090/transfers \
   -H "Content-Type: application/json" \
   -d '{
-    "fromAccount":"BANKA-100-200",
-    "toAccount":"BANKB-300-400",
+    "fromAccount":"CITY-996700111222",
+    "receiverPhone":"+996700333444",
+    "receiverBank":"CITY",
     "amount":"100.00",
-    "currency":"KGS"
+    "currency":"KGS",
+    "category":"TRANSFER"
   }'
 ```
 
-Create held transfer for cancellation demo:
+Interbank transfer by phone:
 
 ```bash
 curl -X POST http://localhost:8090/transfers \
   -H "Content-Type: application/json" \
   -d '{
-    "fromAccount":"BANKA-100-200",
-    "toAccount":"HOLD-300-400",
-    "amount":"50.00",
-    "currency":"KGS"
+    "fromAccount":"CITY-996700111222",
+    "receiverPhone":"+996700333444",
+    "receiverBank":"NOVA",
+    "amount":"100.00",
+    "currency":"KGS",
+    "category":"TRANSFER"
   }'
 ```
 
@@ -78,7 +78,7 @@ Get transfer:
 curl http://localhost:8090/transfers/{paymentId}
 ```
 
-Cancel transfer:
+Cancel transfer before final status:
 
 ```bash
 curl -X POST http://localhost:8090/transfers/{paymentId}/cancel
