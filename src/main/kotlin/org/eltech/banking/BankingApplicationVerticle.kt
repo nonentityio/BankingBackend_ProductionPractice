@@ -123,10 +123,10 @@ class BankingApplicationVerticle : AbstractVerticle() {
             MockClient("demo-hold", "996700000606", "Hold Demo Receiver", "0000")
         )
         val accounts = listOf(
-            MockAccount("CITY-996700111222", "person-aidar", "CITY", "City Bank", "996700111222", BigDecimal("5000.00"), "CLIENT"),
-            MockAccount("CITY-996700333444", "person-amina", "CITY", "City Bank", "996700333444", BigDecimal("2500.00"), "CLIENT"),
-            MockAccount("NOVA-996700333444", "person-amina", "NOVA", "Nova Bank", "996700333444", BigDecimal("1800.00"), "CLIENT"),
-            MockAccount("NOVA-996700555666", "person-daniyar", "NOVA", "Nova Bank", "996700555666", BigDecimal("3000.00"), "CLIENT"),
+            MockAccount("ELDIK-996700111222", "person-aidar", "ELDIK", "Eldik Test Bank", "996700111222", BigDecimal("5000.00"), "CLIENT"),
+            MockAccount("ELDIK-996700333444", "person-amina", "ELDIK", "Eldik Test Bank", "996700333444", BigDecimal("2500.00"), "CLIENT"),
+            MockAccount("ELDIK2-996700333444", "person-amina", "ELDIK2", "Eldik2 Test Bank", "996700333444", BigDecimal("1800.00"), "CLIENT"),
+            MockAccount("ELDIK2-996700555666", "person-daniyar", "ELDIK2", "Eldik2 Test Bank", "996700555666", BigDecimal("3000.00"), "CLIENT"),
             MockAccount("MERCH-996700000101", "merchant-mobile", "MERCHANT", "Merchant Network", "996700000101", BigDecimal("0.00"), "MERCHANT"),
             MockAccount("MERCH-996700000202", "merchant-utility", "MERCHANT", "Merchant Network", "996700000202", BigDecimal("0.00"), "MERCHANT"),
             MockAccount("MERCH-996700000303", "merchant-internet", "MERCHANT", "Merchant Network", "996700000303", BigDecimal("0.00"), "MERCHANT"),
@@ -182,8 +182,8 @@ class BankingApplicationVerticle : AbstractVerticle() {
             JsonObject().put(
                 "items",
                 JsonArray()
-                    .add(JsonObject().put("code", "CITY").put("name", "City Bank"))
-                    .add(JsonObject().put("code", "NOVA").put("name", "Nova Bank"))
+                    .add(JsonObject().put("code", "ELDIK").put("name", "Eldik Test Bank"))
+                    .add(JsonObject().put("code", "ELDIK2").put("name", "Eldik2 Test Bank"))
                     .add(JsonObject().put("code", "MERCHANT").put("name", "Merchant Network"))
                     .add(JsonObject().put("code", "DEMO").put("name", "Demo Bank"))
             )
@@ -224,7 +224,7 @@ class BankingApplicationVerticle : AbstractVerticle() {
         val name = body.getString("clientName")?.trim().orEmpty()
         val phone = normalizePhone(body.getString("phone"))
         val pin = body.getString("pin")?.trim().orEmpty().ifBlank { "1111" }
-        val bankCode = body.getString("bankCode")?.trim()?.uppercase() ?: "CITY"
+        val bankCode = body.getString("bankCode")?.trim()?.uppercase() ?: "ELDIK"
         val bankName = bankName(bankCode)
         if (name.isBlank() || phone.isBlank()) {
             fail(ctx, 400, "clientName and phone are required")
@@ -305,8 +305,9 @@ class BankingApplicationVerticle : AbstractVerticle() {
             .compose { source ->
                 targetFuture.compose { target ->
                     validateTransfer(source, target, amount, currency)
+                    val operationClientId = operationClientFor(source.bankCode)
                     val providerId = providerFor(target.bankCode, category)
-                    paymentClient.createPayment(source.clientId, providerId, target.accountNumber, amount, currency, category)
+                    paymentClient.createPayment(operationClientId, providerId, target.accountNumber, amount, currency, category)
                         .compose { payment ->
                             val paymentId = payment.getString("paymentId")
                             insertTransfer(paymentId, source, target, amount, currency, category, payment.getString("status"))
@@ -403,7 +404,12 @@ class BankingApplicationVerticle : AbstractVerticle() {
             select a.*, c.full_name from bank_accounts a
             join bank_clients c on c.client_id = a.client_id
             where a.client_id = $1
-            order by a.bank_code, a.account_number
+            order by case
+                when a.bank_code = 'ELDIK' then 0
+                when a.bank_code = 'ELDIK2' then 1
+                when a.bank_code = 'MERCHANT' then 2
+                else 9
+            end, a.account_number
             """.trimIndent()
         ).execute(Tuple.of(clientId)).map { rows -> rows.map { accountJson(accountFromRow(it)) } }
     }
@@ -663,8 +669,8 @@ class BankingApplicationVerticle : AbstractVerticle() {
 
     private fun bankName(code: String): String {
         return when (code) {
-            "CITY" -> "City Bank"
-            "NOVA" -> "Nova Bank"
+            "ELDIK" -> "Eldik Test Bank"
+            "ELDIK2" -> "Eldik2 Test Bank"
             "MERCHANT" -> "Merchant Network"
             "DEMO" -> "Demo Bank"
             else -> code
@@ -674,10 +680,20 @@ class BankingApplicationVerticle : AbstractVerticle() {
     private fun providerFor(bankCode: String, category: String): String {
         return when {
             category in setOf("MOBILE_TOPUP", "UTILITY", "CARD_PAYMENT", "WALLET") -> "merchant-network"
-            bankCode == "CITY" -> "city-bank"
-            bankCode == "NOVA" -> "nova-bank"
+            bankCode == "ELDIK" -> "eldik-test-bank"
+            bankCode == "ELDIK2" -> "eldik2-test-bank"
             bankCode == "DEMO" -> "demo-hold"
             else -> "demo-provider"
+        }
+    }
+
+    private fun operationClientFor(bankCode: String): String {
+        return when (bankCode) {
+            "ELDIK" -> "eldik-test-bank"
+            "ELDIK2" -> "eldik2-test-bank"
+            "MERCHANT" -> "merchant-network"
+            "DEMO" -> "demo-hold"
+            else -> bankCode.lowercase()
         }
     }
 

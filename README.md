@@ -14,9 +14,9 @@ Seed users are created automatically on startup:
 
 | Phone | PIN | Bank |
 |---|---:|---|
-| `+996700111222` | `1111` | `CITY` |
-| `+996700333444` | `2222` | `CITY`, `NOVA` |
-| `+996700555666` | `3333` | `NOVA` |
+| `+996700111222` | `1111` | `ELDIK` |
+| `+996700333444` | `2222` | `ELDIK`, `ELDIK2` |
+| `+996700555666` | `3333` | `ELDIK2` |
 
 ## Run
 
@@ -48,9 +48,9 @@ Internal transfer by phone:
 curl -X POST http://localhost:8090/transfers \
   -H "Content-Type: application/json" \
   -d '{
-    "fromAccount":"CITY-996700111222",
+    "fromAccount":"ELDIK-996700111222",
     "receiverPhone":"+996700333444",
-    "receiverBank":"CITY",
+    "receiverBank":"ELDIK",
     "amount":"100.00",
     "currency":"KGS",
     "category":"TRANSFER"
@@ -63,9 +63,9 @@ Interbank transfer by phone:
 curl -X POST http://localhost:8090/transfers \
   -H "Content-Type: application/json" \
   -d '{
-    "fromAccount":"CITY-996700111222",
+    "fromAccount":"ELDIK-996700111222",
     "receiverPhone":"+996700333444",
-    "receiverBank":"NOVA",
+    "receiverBank":"ELDIK2",
     "amount":"100.00",
     "currency":"KGS",
     "category":"TRANSFER"
