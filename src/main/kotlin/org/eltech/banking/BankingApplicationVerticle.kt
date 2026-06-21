@@ -404,6 +404,7 @@ class BankingApplicationVerticle : AbstractVerticle() {
             select a.*, c.full_name from bank_accounts a
             join bank_clients c on c.client_id = a.client_id
             where a.client_id = $1
+              and a.bank_code not in ('CITY', 'NOVA')
             order by case
                 when a.bank_code = 'ELDIK' then 0
                 when a.bank_code = 'ELDIK2' then 1
@@ -420,6 +421,7 @@ class BankingApplicationVerticle : AbstractVerticle() {
             select a.*, c.full_name from bank_accounts a
             join bank_clients c on c.client_id = a.client_id
             where a.account_number = $1
+              and a.bank_code not in ('CITY', 'NOVA')
             """.trimIndent()
         ).execute(Tuple.of(accountNumber)).map { rows ->
             rows.firstOrNull()?.let(::accountFromRow) ?: throw IllegalArgumentException("account not found")
@@ -432,6 +434,7 @@ class BankingApplicationVerticle : AbstractVerticle() {
             select a.*, c.full_name from bank_accounts a
             join bank_clients c on c.client_id = a.client_id
             where a.phone = $1 and a.bank_code = $2
+              and a.bank_code not in ('CITY', 'NOVA')
             """.trimIndent()
         ).execute(Tuple.of(phone, bankCode)).map { rows ->
             rows.firstOrNull()?.let(::accountFromRow) ?: throw IllegalArgumentException("receiver account not found")
@@ -539,7 +542,9 @@ class BankingApplicationVerticle : AbstractVerticle() {
             join bank_clients fc on fc.client_id = fa.client_id
             join bank_accounts ta on ta.account_number = t.to_account
             join bank_clients tc on tc.client_id = ta.client_id
-            where fa.client_id = $1 or ta.client_id = $1
+            where (fa.client_id = $1 or ta.client_id = $1)
+              and fa.bank_code not in ('CITY', 'NOVA')
+              and ta.bank_code not in ('CITY', 'NOVA')
             order by t.created_at desc
             limit 50
             """.trimIndent()
