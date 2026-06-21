@@ -257,6 +257,7 @@ class BankingApplicationVerticle : AbstractVerticle() {
 
     private fun listClientTransfers(ctx: RoutingContext) {
         transfersByClient(ctx.pathParam("clientId"))
+            .compose(::syncTransfers)
             .onSuccess { ctx.json(JsonObject().put("items", JsonArray(it.map(::transferJson)))) }
             .onFailure { fail(ctx, 500, it.message ?: "transfers unavailable") }
     }
@@ -367,6 +368,21 @@ class BankingApplicationVerticle : AbstractVerticle() {
                 Future.succeededFuture(transfer)
             }
         }
+    }
+
+    private fun syncTransfers(items: List<BankTransfer>): Future<List<BankTransfer>> {
+        var chain: Future<List<BankTransfer>> = Future.succeededFuture(emptyList())
+        items.forEach { item ->
+            chain = chain.compose { synced ->
+                val next = if (item.paymentStatus == "SUCCESS" || item.paymentStatus == "FAILED" || item.paymentStatus == "CANCELLED") {
+                    Future.succeededFuture(item)
+                } else {
+                    syncTransfer(item)
+                }
+                next.map { synced + it }
+            }
+        }
+        return chain
     }
 
     private fun validateTransfer(source: BankAccount, target: BankAccount, amount: BigDecimal, currency: String) {
