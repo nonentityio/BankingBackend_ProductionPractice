@@ -17,6 +17,7 @@ dependencies {
     implementation("io.vertx:vertx-core")
     implementation("io.vertx:vertx-web")
     implementation("io.vertx:vertx-web-client")
+    implementation("io.vertx:vertx-pg-client")
     implementation("io.vertx:vertx-lang-kotlin")
     implementation("org.slf4j:slf4j-simple:2.0.17")
 }
