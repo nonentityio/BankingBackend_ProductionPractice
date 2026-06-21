@@ -45,6 +45,7 @@ class BankingApplicationVerticle : AbstractVerticle() {
         router.post("/auth/login").handler(::login)
         router.post("/clients/register").handler(::registerClient)
         router.get("/clients/:clientId/accounts").handler(::listClientAccounts)
+        router.get("/clients/:clientId/transfers").handler(::listClientTransfers)
         router.get("/accounts/:accountNumber").handler(::getAccount)
         router.get("/directory/accounts").handler(::findAccount)
         router.post("/transfers").handler(::createTransfer)
@@ -254,6 +255,12 @@ class BankingApplicationVerticle : AbstractVerticle() {
             .onFailure { fail(ctx, 500, it.message ?: "accounts unavailable") }
     }
 
+    private fun listClientTransfers(ctx: RoutingContext) {
+        transfersByClient(ctx.pathParam("clientId"))
+            .onSuccess { ctx.json(JsonObject().put("items", JsonArray(it.map(::transferJson)))) }
+            .onFailure { fail(ctx, 500, it.message ?: "transfers unavailable") }
+    }
+
     private fun getAccount(ctx: RoutingContext) {
         getAccountByNumber(ctx.pathParam("accountNumber"))
             .onSuccess { ctx.json(accountJson(it)) }
@@ -297,7 +304,8 @@ class BankingApplicationVerticle : AbstractVerticle() {
             .compose { source ->
                 targetFuture.compose { target ->
                     validateTransfer(source, target, amount, currency)
-                    paymentClient.createPayment(source.clientId, target.accountNumber, amount, currency, category)
+                    val providerId = providerFor(target.bankCode, category)
+                    paymentClient.createPayment(source.clientId, providerId, target.accountNumber, amount, currency, category)
                         .compose { payment ->
                             val paymentId = payment.getString("paymentId")
                             insertTransfer(paymentId, source, target, amount, currency, category, payment.getString("status"))
@@ -478,6 +486,44 @@ class BankingApplicationVerticle : AbstractVerticle() {
         }
     }
 
+    private fun transfersByClient(clientId: String): Future<List<BankTransfer>> {
+        return db.preparedQuery(
+            """
+            select
+                t.payment_id,
+                t.amount,
+                t.currency,
+                t.category,
+                t.payment_status,
+                t.applied,
+                fa.account_number as from_account_number,
+                fa.client_id as from_client_id,
+                fa.bank_code as from_bank_code,
+                fa.bank_name as from_bank_name,
+                fa.phone as from_phone,
+                fa.currency as from_currency,
+                fa.balance as from_balance,
+                fc.full_name as from_client_name,
+                ta.account_number as to_account_number,
+                ta.client_id as to_client_id,
+                ta.bank_code as to_bank_code,
+                ta.bank_name as to_bank_name,
+                ta.phone as to_phone,
+                ta.currency as to_currency,
+                ta.balance as to_balance,
+                tc.full_name as to_client_name
+            from bank_transfers t
+            join bank_accounts fa on fa.account_number = t.from_account
+            join bank_clients fc on fc.client_id = fa.client_id
+            join bank_accounts ta on ta.account_number = t.to_account
+            join bank_clients tc on tc.client_id = ta.client_id
+            where fa.client_id = $1 or ta.client_id = $1
+            order by t.created_at desc
+            limit 50
+            """.trimIndent()
+        ).execute(Tuple.of(clientId)).map { rows -> rows.map(::transferFromRow) }
+    }
+
     private fun accountJson(account: BankAccount): JsonObject {
         return JsonObject()
             .put("accountNumber", account.accountNumber)
@@ -609,6 +655,16 @@ class BankingApplicationVerticle : AbstractVerticle() {
         }
     }
 
+    private fun providerFor(bankCode: String, category: String): String {
+        return when {
+            category in setOf("MOBILE_TOPUP", "UTILITY", "CARD_PAYMENT", "WALLET") -> "merchant-network"
+            bankCode == "CITY" -> "city-bank"
+            bankCode == "NOVA" -> "nova-bank"
+            bankCode == "DEMO" -> "demo-hold"
+            else -> "demo-provider"
+        }
+    }
+
     private fun fail(ctx: RoutingContext, status: Int, message: String) {
         ctx.response()
             .setStatusCode(status)
@@ -621,10 +677,10 @@ class PaymentServiceClient(
     private val webClient: WebClient,
     private val baseUrl: String
 ) {
-    fun createPayment(clientId: String, requisite: String, amount: BigDecimal, currency: String, category: String): Future<JsonObject> {
+    fun createPayment(clientId: String, providerId: String, requisite: String, amount: BigDecimal, currency: String, category: String): Future<JsonObject> {
         val body = JsonObject()
             .put("clientId", clientId)
-            .put("providerId", "demo-provider")
+            .put("providerId", providerId)
             .put("amount", amount.toPlainString())
             .put("currency", currency)
             .put("serviceCategory", category)
