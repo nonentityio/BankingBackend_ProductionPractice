@@ -28,7 +28,8 @@ class BankingApplicationVerticle : AbstractVerticle() {
         db = createPgPool()
         paymentClient = PaymentServiceClient(
             WebClient.create(vertx),
-            System.getenv("PAYMENT_SERVICE_URL") ?: "http://localhost:8080"
+            System.getenv("PAYMENT_SERVICE_URL") ?: "http://localhost:8080",
+            System.getenv("PAYMENT_SERVICE_TOKEN") ?: "local-dev-payment-token"
         )
 
         setupDatabase()
@@ -712,7 +713,8 @@ class BankingApplicationVerticle : AbstractVerticle() {
 
 class PaymentServiceClient(
     private val webClient: WebClient,
-    private val baseUrl: String
+    private val baseUrl: String,
+    private val token: String
 ) {
     fun createPayment(clientId: String, providerId: String, requisite: String, amount: BigDecimal, currency: String, category: String): Future<JsonObject> {
         val body = JsonObject()
@@ -724,7 +726,7 @@ class PaymentServiceClient(
             .put("requisite", requisite)
 
         return webClient.postAbs("$baseUrl/payments")
-            .putHeader("Authorization", "Bearer demo-token")
+            .putHeader("Authorization", "Bearer $token")
             .putHeader("Idempotency-Key", "banking-" + UUID.randomUUID())
             .putHeader("Content-Type", "application/json")
             .sendJsonObject(body)
@@ -739,7 +741,7 @@ class PaymentServiceClient(
 
     fun getPayment(paymentId: String): Future<JsonObject> {
         return webClient.getAbs("$baseUrl/payments/$paymentId")
-            .putHeader("Authorization", "Bearer demo-token")
+            .putHeader("Authorization", "Bearer $token")
             .send()
             .compose { response ->
                 if (response.statusCode() in 200..299) {
@@ -752,7 +754,7 @@ class PaymentServiceClient(
 
     fun cancelPayment(paymentId: String): Future<JsonObject> {
         return webClient.postAbs("$baseUrl/payments/$paymentId/cancel")
-            .putHeader("Authorization", "Bearer demo-token")
+            .putHeader("Authorization", "Bearer $token")
             .send()
             .compose { response ->
                 if (response.statusCode() in 200..299) {

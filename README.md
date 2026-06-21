@@ -27,6 +27,7 @@ cd /Users/amirhanordobaev/Downloads/BankingBackend
 ./gradlew stage
 PGHOST=localhost PGPORT=55432 PGDATABASE=banking PGUSER=banking PGPASSWORD=banking \
 PAYMENT_SERVICE_URL=http://localhost:8080 \
+PAYMENT_SERVICE_TOKEN=local-dev-payment-token \
 build/install/BankingBackend/bin/BankingBackend
 ```
 
