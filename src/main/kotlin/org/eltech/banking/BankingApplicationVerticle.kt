@@ -52,6 +52,11 @@ class BankingApplicationVerticle : AbstractVerticle() {
         addClient("client-b", "Amina", "BANKB-300-400", BigDecimal("2500.00"))
         addClient("client-timeout", "Timeout Receiver", "TIMEOUT-300-400", BigDecimal("0.00"))
         addClient("client-hold", "Hold Receiver", "HOLD-300-400", BigDecimal("0.00"))
+        addClient("merchant-mobile", "Mobile Operator", "MOBILE-100-001", BigDecimal("0.00"))
+        addClient("merchant-utility", "Utility Provider", "UTILITY-200-001", BigDecimal("0.00"))
+        addClient("merchant-internet", "Internet Provider", "INTERNET-300-001", BigDecimal("0.00"))
+        addClient("merchant-card", "Card Service", "CARD-400-001", BigDecimal("0.00"))
+        addClient("merchant-wallet", "Wallet Service", "WALLET-500-001", BigDecimal("0.00"))
     }
 
     private fun addClient(clientId: String, name: String, accountNumber: String, balance: BigDecimal) {
