@@ -20,10 +20,31 @@ dependencies {
     implementation("io.vertx:vertx-pg-client")
     implementation("io.vertx:vertx-lang-kotlin")
     implementation("org.slf4j:slf4j-simple:2.0.17")
+
+    testImplementation(kotlin("test"))
 }
 
 kotlin {
     jvmToolchain(23)
+}
+
+sourceSets {
+    create("loadTest") {
+        kotlin.srcDir("src/loadTest/kotlin")
+        compileClasspath += sourceSets["main"].output + configurations["runtimeClasspath"]
+        runtimeClasspath += output + compileClasspath
+    }
+}
+
+tasks.test {
+    useJUnitPlatform()
+}
+
+tasks.register<JavaExec>("loadTest") {
+    group = "verification"
+    description = "Runs payment load test and prints RPS metrics"
+    classpath = sourceSets["loadTest"].runtimeClasspath
+    mainClass.set("org.eltech.banking.LoadTestKt")
 }
 
 application {

@@ -16,7 +16,6 @@ import io.vertx.sqlclient.PoolOptions
 import io.vertx.sqlclient.Row
 import io.vertx.sqlclient.Tuple
 import java.math.BigDecimal
-import java.math.RoundingMode
 import java.net.URI
 import java.util.UUID
 
@@ -94,6 +93,8 @@ class BankingApplicationVerticle : AbstractVerticle() {
                 receiver_phone varchar(32) not null,
                 receiver_bank varchar(40) not null,
                 category varchar(40) not null,
+                service_id varchar(80) not null default 'transfer.internal',
+                service_requisite varchar(160) not null default '',
                 amount numeric(18, 2) not null,
                 currency varchar(3) not null,
                 payment_status varchar(40) not null,
@@ -101,7 +102,9 @@ class BankingApplicationVerticle : AbstractVerticle() {
                 created_at timestamptz not null default now(),
                 updated_at timestamptz not null default now()
             )
-            """.trimIndent()
+            """.trimIndent(),
+            "alter table bank_transfers add column if not exists service_id varchar(80) not null default 'transfer.internal'",
+            "alter table bank_transfers add column if not exists service_requisite varchar(160) not null default ''"
         )
 
         var chain: Future<Void> = Future.succeededFuture()
@@ -293,6 +296,8 @@ class BankingApplicationVerticle : AbstractVerticle() {
         val receiverBank = body.getString("receiverBank")?.trim()?.uppercase().orEmpty()
         val currency = body.getString("currency")?.trim()?.uppercase() ?: "KGS"
         val category = body.getString("category")?.trim()?.uppercase() ?: "TRANSFER"
+        val serviceId = body.getString("serviceId")?.trim().orEmpty().ifBlank { BankingRules.defaultServiceId(category) }
+        val serviceRequisite = body.getString("serviceRequisite")?.trim().orEmpty()
         val amount = parseAmount(body)
 
         if (fromAccount.isBlank() || amount == null) {
@@ -310,12 +315,14 @@ class BankingApplicationVerticle : AbstractVerticle() {
             .compose { source ->
                 targetFuture.compose { target ->
                     validateTransfer(source, target, amount, currency)
+                    BankingRules.validateServicePayment(category, serviceId, serviceRequisite, amount)
                     val operationClientId = operationClientFor(source.bankCode)
                     val providerId = providerFor(target.bankCode, category)
-                    paymentClient.createPayment(operationClientId, providerId, target.accountNumber, amount, currency, category)
+                    val paymentRequisite = serviceRequisite.ifBlank { target.accountNumber }
+                    paymentClient.createPayment(operationClientId, providerId, paymentRequisite, amount, currency, category, serviceId)
                         .compose { payment ->
                             val paymentId = payment.getString("paymentId")
-                            insertTransfer(paymentId, source, target, amount, currency, category, payment.getString("status"))
+                            insertTransfer(paymentId, source, target, amount, currency, category, serviceId, serviceRequisite, payment.getString("status"))
                                 .compose { getTransferById(paymentId) }
                         }
                 }
@@ -392,15 +399,7 @@ class BankingApplicationVerticle : AbstractVerticle() {
     }
 
     private fun validateTransfer(source: BankAccount, target: BankAccount, amount: BigDecimal, currency: String) {
-        if (source.currency != currency || target.currency != currency) {
-            throw IllegalArgumentException("currency mismatch")
-        }
-        if (source.balance < amount) {
-            throw IllegalArgumentException("not enough money")
-        }
-        if (source.accountNumber == target.accountNumber) {
-            throw IllegalArgumentException("cannot transfer to the same account")
-        }
+        BankingRules.validateTransfer(source, target, amount, currency)
     }
 
     private fun accountsByClient(clientId: String): Future<List<JsonObject>> {
@@ -453,15 +452,17 @@ class BankingApplicationVerticle : AbstractVerticle() {
         amount: BigDecimal,
         currency: String,
         category: String,
+        serviceId: String,
+        serviceRequisite: String,
         status: String
     ): Future<Void> {
         return db.preparedQuery(
             """
             insert into bank_transfers (
                 payment_id, from_account, to_account, receiver_phone, receiver_bank,
-                category, amount, currency, payment_status, applied
+                category, service_id, service_requisite, amount, currency, payment_status, applied
             )
-            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, false)
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, false)
             """.trimIndent()
         ).execute(
             Tuple.of(
@@ -471,6 +472,8 @@ class BankingApplicationVerticle : AbstractVerticle() {
                 target.phone,
                 target.bankCode,
                 category,
+                serviceId,
+                serviceRequisite,
                 amount,
                 currency,
                 status
@@ -486,6 +489,8 @@ class BankingApplicationVerticle : AbstractVerticle() {
                 t.amount,
                 t.currency,
                 t.category,
+                t.service_id,
+                t.service_requisite,
                 t.payment_status,
                 t.applied,
                 fa.account_number as from_account_number,
@@ -524,6 +529,8 @@ class BankingApplicationVerticle : AbstractVerticle() {
                 t.amount,
                 t.currency,
                 t.category,
+                t.service_id,
+                t.service_requisite,
                 t.payment_status,
                 t.applied,
                 fa.account_number as from_account_number,
@@ -576,6 +583,8 @@ class BankingApplicationVerticle : AbstractVerticle() {
             .put("receiverPhone", formatPhone(transfer.to.phone))
             .put("receiverBank", transfer.to.bankCode)
             .put("category", transfer.category)
+            .put("serviceId", transfer.serviceId)
+            .put("serviceRequisite", transfer.serviceRequisite)
             .put("amount", transfer.amount.toPlainString())
             .put("currency", transfer.currency)
             .put("paymentStatus", transfer.paymentStatus)
@@ -626,6 +635,8 @@ class BankingApplicationVerticle : AbstractVerticle() {
             amount = row.getBigDecimal("amount"),
             currency = row.getString("currency"),
             category = row.getString("category"),
+            serviceId = row.getString("service_id"),
+            serviceRequisite = row.getString("service_requisite"),
             paymentStatus = row.getString("payment_status"),
             applied = row.getBoolean("applied")
         )
@@ -659,52 +670,27 @@ class BankingApplicationVerticle : AbstractVerticle() {
     }
 
     private fun parseAmount(body: JsonObject): BigDecimal? {
-        val raw = body.getValue("amount")
-        val amount = when (raw) {
-            is Number -> BigDecimal(raw.toString())
-            is String -> raw.toBigDecimalOrNull()
-            else -> null
-        }
-        if (amount == null || amount <= BigDecimal.ZERO) return null
-        return amount.setScale(2, RoundingMode.HALF_UP)
+        return BankingRules.parseAmount(body.getValue("amount"))
     }
 
     private fun normalizePhone(value: String?): String {
-        return value.orEmpty().filter { it.isDigit() }
+        return BankingRules.normalizePhone(value)
     }
 
     private fun formatPhone(value: String): String {
-        return if (value.startsWith("996")) "+$value" else value
+        return BankingRules.formatPhone(value)
     }
 
     private fun bankName(code: String): String {
-        return when (code) {
-            "ELDIK" -> "Eldik Test Bank"
-            "ELDIK2" -> "Eldik2 Test Bank"
-            "MERCHANT" -> "Merchant Network"
-            "DEMO" -> "Demo Bank"
-            else -> code
-        }
+        return BankingRules.bankName(code)
     }
 
     private fun providerFor(bankCode: String, category: String): String {
-        return when {
-            category in setOf("MOBILE_TOPUP", "UTILITY", "CARD_PAYMENT", "WALLET") -> "merchant-network"
-            bankCode == "ELDIK" -> "eldik-test-bank"
-            bankCode == "ELDIK2" -> "eldik2-test-bank"
-            bankCode == "DEMO" -> "demo-hold"
-            else -> "demo-provider"
-        }
+        return BankingRules.providerFor(bankCode, category)
     }
 
     private fun operationClientFor(bankCode: String): String {
-        return when (bankCode) {
-            "ELDIK" -> "eldik-test-bank"
-            "ELDIK2" -> "eldik2-test-bank"
-            "MERCHANT" -> "merchant-network"
-            "DEMO" -> "demo-hold"
-            else -> bankCode.lowercase()
-        }
+        return BankingRules.operationClientFor(bankCode)
     }
 
     private fun fail(ctx: RoutingContext, status: Int, message: String) {
@@ -720,13 +706,14 @@ class PaymentServiceClient(
     private val baseUrl: String,
     private val token: String
 ) {
-    fun createPayment(clientId: String, providerId: String, requisite: String, amount: BigDecimal, currency: String, category: String): Future<JsonObject> {
+    fun createPayment(clientId: String, providerId: String, requisite: String, amount: BigDecimal, currency: String, category: String, serviceId: String): Future<JsonObject> {
         val body = JsonObject()
             .put("clientId", clientId)
             .put("providerId", providerId)
             .put("amount", amount.toPlainString())
             .put("currency", currency)
             .put("serviceCategory", category)
+            .put("serviceId", serviceId)
             .put("requisite", requisite)
 
         return webClient.postAbs("$baseUrl/payments")
@@ -805,6 +792,8 @@ data class BankTransfer(
     val amount: BigDecimal,
     val currency: String,
     val category: String,
+    val serviceId: String,
+    val serviceRequisite: String,
     val paymentStatus: String,
     val applied: Boolean
 )
