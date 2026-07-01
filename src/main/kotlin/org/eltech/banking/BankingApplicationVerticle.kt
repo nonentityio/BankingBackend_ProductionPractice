@@ -67,7 +67,7 @@ class BankingApplicationVerticle : AbstractVerticle() {
                 client_id varchar(80) primary key,
                 phone varchar(32) not null unique,
                 full_name varchar(160) not null,
-                pin_code varchar(16) not null,
+                pin_code varchar(128) not null,
                 created_at timestamptz not null default now()
             )
             """.trimIndent(),
@@ -103,8 +103,12 @@ class BankingApplicationVerticle : AbstractVerticle() {
                 updated_at timestamptz not null default now()
             )
             """.trimIndent(),
+            "alter table bank_clients alter column pin_code type varchar(128)",
             "alter table bank_transfers add column if not exists service_id varchar(80) not null default 'transfer.internal'",
-            "alter table bank_transfers add column if not exists service_requisite varchar(160) not null default ''"
+            "alter table bank_transfers add column if not exists service_requisite varchar(160) not null default ''",
+            "create index if not exists idx_bank_accounts_phone_bank on bank_accounts (phone, bank_code)",
+            "create index if not exists idx_bank_transfers_from_created on bank_transfers (from_account, created_at desc)",
+            "create index if not exists idx_bank_transfers_to_created on bank_transfers (to_account, created_at desc)"
         )
 
         var chain: Future<Void> = Future.succeededFuture()
@@ -152,7 +156,7 @@ class BankingApplicationVerticle : AbstractVerticle() {
                     values ($1, $2, $3, $4)
                     on conflict (client_id) do nothing
                     """.trimIndent()
-                ).execute(Tuple.of(client.clientId, client.phone, client.fullName, client.pin)).map<Void> { null }
+                ).execute(Tuple.of(client.clientId, client.phone, client.fullName, BankingSecurity.hashPin(client.pin))).map<Void> { null }
             }
         }
         accounts.forEach { account ->
@@ -207,19 +211,30 @@ class BankingApplicationVerticle : AbstractVerticle() {
             return
         }
 
-        db.preparedQuery("select client_id, phone, full_name from bank_clients where phone = $1 and pin_code = $2")
-            .execute(Tuple.of(phone, pin))
+        db.preparedQuery("select client_id, phone, full_name, pin_code from bank_clients where phone = $1")
+            .execute(Tuple.of(phone))
             .compose { rows ->
                 val client = rows.firstOrNull()
-                if (client == null) {
-                    Future.failedFuture(IllegalArgumentException("invalid phone or pin"))
+                if (client == null || !BankingSecurity.verifyPin(pin, client.getString("pin_code"))) {
+                    Future.failedFuture<JsonObject>(IllegalArgumentException("invalid phone or pin"))
                 } else {
-                    accountsByClient(client.getString("client_id")).map { accounts ->
-                        JsonObject()
-                            .put("clientId", client.getString("client_id"))
-                            .put("phone", formatPhone(client.getString("phone")))
-                            .put("clientName", client.getString("full_name"))
-                            .put("accounts", JsonArray(accounts))
+                    val clientId = client.getString("client_id")
+                    val storedPin = client.getString("pin_code")
+                    val migratePin: Future<Void> = if (BankingSecurity.isHashed(storedPin)) {
+                        Future.succeededFuture()
+                    } else {
+                        db.preparedQuery("update bank_clients set pin_code = $1 where client_id = $2")
+                            .execute(Tuple.of(BankingSecurity.hashPin(pin), clientId))
+                            .mapEmpty()
+                    }
+                    migratePin.compose {
+                        accountsByClient(clientId).map { accounts ->
+                            JsonObject()
+                                .put("clientId", clientId)
+                                .put("phone", formatPhone(client.getString("phone")))
+                                .put("clientName", client.getString("full_name"))
+                                .put("accounts", JsonArray(accounts))
+                        }
                     }
                 }
             }
@@ -238,12 +253,16 @@ class BankingApplicationVerticle : AbstractVerticle() {
             fail(ctx, 400, "clientName and phone are required")
             return
         }
+        if (!BankingSecurity.pinLooksValid(pin)) {
+            fail(ctx, 400, "pin must contain 4 to 6 digits")
+            return
+        }
 
         val clientId = "person-" + UUID.randomUUID().toString().take(8)
         val accountNumber = "$bankCode-$phone"
         db.preparedQuery(
             "insert into bank_clients (client_id, phone, full_name, pin_code) values ($1, $2, $3, $4)"
-        ).execute(Tuple.of(clientId, phone, name, pin))
+        ).execute(Tuple.of(clientId, phone, name, BankingSecurity.hashPin(pin)))
             .compose {
                 db.preparedQuery(
                     """

@@ -5,6 +5,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class BankingRulesTest {
     private val source = BankAccount(
@@ -39,6 +41,18 @@ class BankingRulesTest {
         assertEquals(BigDecimal("10.24"), BankingRules.parseAmount("10.235"))
         assertNull(BankingRules.parseAmount("0"))
         assertNull(BankingRules.parseAmount("abc"))
+    }
+
+
+    @Test
+    fun `hashes and verifies pin codes`() {
+        val hash = BankingSecurity.hashPin("1234")
+
+        assertTrue(hash.startsWith("sha256$"))
+        assertTrue(BankingSecurity.verifyPin("1234", hash))
+        assertFalse(BankingSecurity.verifyPin("0000", hash))
+        assertTrue(BankingSecurity.pinLooksValid("1234"))
+        assertFalse(BankingSecurity.pinLooksValid("12ab"))
     }
 
     @Test
