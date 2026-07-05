@@ -46,6 +46,9 @@ class BankingApplicationVerticle : AbstractVerticle() {
         router.post("/clients/register").handler(::registerClient)
         router.get("/clients/:clientId/accounts").handler(::listClientAccounts)
         router.get("/clients/:clientId/transfers").handler(::listClientTransfers)
+        router.get("/clients/:clientId/notifications").handler(::listNotifications)
+        router.post("/clients/:clientId/notifications/read").handler(::markNotificationsRead)
+        router.post("/clients/:clientId/devices").handler(::registerDevice)
         router.get("/accounts/:accountNumber").handler(::getAccount)
         router.get("/directory/accounts").handler(::findAccount)
         router.post("/transfers").handler(::createTransfer)
@@ -103,12 +106,34 @@ class BankingApplicationVerticle : AbstractVerticle() {
                 updated_at timestamptz not null default now()
             )
             """.trimIndent(),
+            """
+            create table if not exists bank_device_tokens (
+                client_id varchar(80) not null references bank_clients(client_id),
+                platform varchar(20) not null,
+                device_token varchar(240) not null,
+                last_seen_at timestamptz not null default now(),
+                primary key (client_id, device_token)
+            )
+            """.trimIndent(),
+            """
+            create table if not exists bank_notifications (
+                notification_id varchar(80) primary key,
+                client_id varchar(80) not null references bank_clients(client_id),
+                title varchar(120) not null,
+                body varchar(320) not null,
+                notification_type varchar(30) not null,
+                transfer_id varchar(80),
+                is_read boolean not null default false,
+                created_at timestamptz not null default now()
+            )
+            """.trimIndent(),
             "alter table bank_clients alter column pin_code type varchar(128)",
             "alter table bank_transfers add column if not exists service_id varchar(80) not null default 'transfer.internal'",
             "alter table bank_transfers add column if not exists service_requisite varchar(160) not null default ''",
             "create index if not exists idx_bank_accounts_phone_bank on bank_accounts (phone, bank_code)",
             "create index if not exists idx_bank_transfers_from_created on bank_transfers (from_account, created_at desc)",
-            "create index if not exists idx_bank_transfers_to_created on bank_transfers (to_account, created_at desc)"
+            "create index if not exists idx_bank_transfers_to_created on bank_transfers (to_account, created_at desc)",
+            "create index if not exists idx_bank_notifications_client_created on bank_notifications (client_id, created_at desc)"
         )
 
         var chain: Future<Void> = Future.succeededFuture()
@@ -289,6 +314,51 @@ class BankingApplicationVerticle : AbstractVerticle() {
             .onFailure { fail(ctx, 500, it.message ?: "transfers unavailable") }
     }
 
+    private fun listNotifications(ctx: RoutingContext) {
+        val clientId = ctx.pathParam("clientId")
+        db.preparedQuery(
+            """
+            select notification_id, client_id, title, body, notification_type, transfer_id, is_read, created_at
+            from bank_notifications
+            where client_id = $1
+            order by created_at desc
+            limit 50
+            """.trimIndent()
+        ).execute(Tuple.of(clientId))
+            .onSuccess { rows -> ctx.json(JsonObject().put("items", JsonArray(rows.map(::notificationJson)))) }
+            .onFailure { fail(ctx, 500, it.message ?: "notifications unavailable") }
+    }
+
+    private fun markNotificationsRead(ctx: RoutingContext) {
+        val clientId = ctx.pathParam("clientId")
+        db.preparedQuery("update bank_notifications set is_read = true where client_id = $1")
+            .execute(Tuple.of(clientId))
+            .onSuccess { ctx.json(JsonObject().put("status", "OK")) }
+            .onFailure { fail(ctx, 500, it.message ?: "notifications update failed") }
+    }
+
+    private fun registerDevice(ctx: RoutingContext) {
+        val clientId = ctx.pathParam("clientId")
+        val body = ctx.body().asJsonObject() ?: JsonObject()
+        val platform = body.getString("platform")?.trim()?.uppercase().orEmpty().ifBlank { "DEMO" }.take(20)
+        val token = body.getString("deviceToken")?.trim().orEmpty()
+        if (token.isBlank()) {
+            fail(ctx, 400, "deviceToken is required")
+            return
+        }
+
+        db.preparedQuery(
+            """
+            insert into bank_device_tokens (client_id, platform, device_token, last_seen_at)
+            values ($1, $2, $3, now())
+            on conflict (client_id, device_token)
+            do update set platform = excluded.platform, last_seen_at = now()
+            """.trimIndent()
+        ).execute(Tuple.of(clientId, platform, token.take(240)))
+            .onSuccess { ctx.response().setStatusCode(201).putHeader("content-type", "application/json").end(JsonObject().put("status", "REGISTERED").encode()) }
+            .onFailure { fail(ctx, 500, it.message ?: "device registration failed") }
+    }
+
     private fun getAccount(ctx: RoutingContext) {
         getAccountByNumber(ctx.pathParam("accountNumber"))
             .onSuccess { ctx.json(accountJson(it)) }
@@ -380,18 +450,31 @@ class BankingApplicationVerticle : AbstractVerticle() {
             val status = payment.getString("status")
             if (status == "SUCCESS" && !transfer.applied) {
                 db.withTransaction { tx ->
-                    tx.preparedQuery("update bank_accounts set balance = balance - $1 where account_number = $2")
-                        .execute(Tuple.of(transfer.amount, transfer.from.accountNumber))
-                        .compose {
-                            tx.preparedQuery("update bank_accounts set balance = balance + $1 where account_number = $2")
-                                .execute(Tuple.of(transfer.amount, transfer.to.accountNumber))
+                    tx.preparedQuery("select applied from bank_transfers where payment_id = $1 for update")
+                        .execute(Tuple.of(transfer.paymentId))
+                        .compose { locked ->
+                            val alreadyApplied = locked.firstOrNull()?.getBoolean("applied") ?: true
+                            if (alreadyApplied) {
+                                Future.succeededFuture(false)
+                            } else {
+                                tx.preparedQuery("update bank_accounts set balance = balance - $1 where account_number = $2")
+                                    .execute(Tuple.of(transfer.amount, transfer.from.accountNumber))
+                                    .compose {
+                                        tx.preparedQuery("update bank_accounts set balance = balance + $1 where account_number = $2")
+                                            .execute(Tuple.of(transfer.amount, transfer.to.accountNumber))
+                                    }
+                                    .compose {
+                                        tx.preparedQuery("update bank_transfers set payment_status = $1, applied = true, updated_at = now() where payment_id = $2")
+                                            .execute(Tuple.of(status, transfer.paymentId))
+                                    }
+                                    .map(true)
+                            }
                         }
-                        .compose {
-                            tx.preparedQuery("update bank_transfers set payment_status = $1, applied = true, updated_at = now() where payment_id = $2")
-                                .execute(Tuple.of(status, transfer.paymentId))
-                        }
-                        .map<Void> { null }
-                }.compose { getTransferById(transfer.paymentId) }
+                }.compose { appliedNow: Boolean ->
+                    getTransferById(transfer.paymentId).compose { fresh ->
+                        if (appliedNow) createTransferNotifications(fresh).map(fresh) else Future.succeededFuture(fresh)
+                    }
+                }
             } else if (status != transfer.paymentStatus) {
                 db.preparedQuery("update bank_transfers set payment_status = $1, updated_at = now() where payment_id = $2")
                     .execute(Tuple.of(status, transfer.paymentId))
@@ -582,6 +665,35 @@ class BankingApplicationVerticle : AbstractVerticle() {
         ).execute(Tuple.of(clientId)).map { rows -> rows.map(::transferFromRow) }
     }
 
+    private fun createTransferNotifications(transfer: BankTransfer): Future<Void> {
+        val amountText = "${transfer.amount.toPlainString()} ${transfer.currency}"
+        val outgoing = notifyClient(
+            clientId = transfer.from.clientId,
+            title = "Платеж выполнен",
+            body = "-$amountText · ${transfer.to.clientName} · ${categoryName(transfer.category)}",
+            type = "OUTGOING_PAYMENT",
+            transferId = transfer.paymentId
+        )
+        val incoming = notifyClient(
+            clientId = transfer.to.clientId,
+            title = "Поступление платежа",
+            body = "+$amountText · от ${transfer.from.clientName} · ${categoryName(transfer.category)}",
+            type = "INCOMING_PAYMENT",
+            transferId = transfer.paymentId
+        )
+        return outgoing.compose { incoming }
+    }
+
+    private fun notifyClient(clientId: String, title: String, body: String, type: String, transferId: String?): Future<Void> {
+        return db.preparedQuery(
+            """
+            insert into bank_notifications (notification_id, client_id, title, body, notification_type, transfer_id)
+            values ($1, $2, $3, $4, $5, $6)
+            """.trimIndent()
+        ).execute(Tuple.of("notif-" + UUID.randomUUID(), clientId, title, body, type, transferId))
+            .map<Void> { null }
+    }
+
     private fun accountJson(account: BankAccount): JsonObject {
         return JsonObject()
             .put("accountNumber", account.accountNumber)
@@ -611,6 +723,18 @@ class BankingApplicationVerticle : AbstractVerticle() {
             .put("transferType", if (transfer.from.bankCode == transfer.to.bankCode) "INTERNAL" else "INTERBANK")
             .put("from", accountJson(transfer.from))
             .put("to", accountJson(transfer.to))
+    }
+
+    private fun notificationJson(row: Row): JsonObject {
+        return JsonObject()
+            .put("notificationId", row.getString("notification_id"))
+            .put("clientId", row.getString("client_id"))
+            .put("title", row.getString("title"))
+            .put("body", row.getString("body"))
+            .put("type", row.getString("notification_type"))
+            .put("transferId", row.getString("transfer_id"))
+            .put("read", row.getBoolean("is_read"))
+            .put("createdAt", row.getOffsetDateTime("created_at").toString())
     }
 
     private fun accountFromRow(row: Row): BankAccount {
@@ -710,6 +834,16 @@ class BankingApplicationVerticle : AbstractVerticle() {
 
     private fun operationClientFor(bankCode: String): String {
         return BankingRules.operationClientFor(bankCode)
+    }
+
+    private fun categoryName(category: String): String {
+        return when (category) {
+            "MOBILE_TOPUP" -> "пополнение"
+            "UTILITY" -> "коммунальная услуга"
+            "CARD_PAYMENT" -> "карта"
+            "WALLET" -> "кошелек"
+            else -> "перевод"
+        }
     }
 
     private fun fail(ctx: RoutingContext, status: Int, message: String) {
