@@ -138,8 +138,9 @@ class BankingApplicationVerticle : AbstractVerticle() {
             "create index if not exists idx_bank_transfers_from_created on bank_transfers (from_account, created_at desc)",
             "create index if not exists idx_bank_transfers_to_created on bank_transfers (to_account, created_at desc)",
             "create index if not exists idx_bank_notifications_client_created on bank_notifications (client_id, created_at desc)",
-            "delete from bank_accounts where client_id = 'person-amirhan-ordobaev' or phone = '996553807009'",
-            "delete from bank_clients where client_id = 'person-amirhan-ordobaev' or phone = '996553807009'"
+            "update bank_clients set phone = '996553807009-old' where client_id = 'person-amirhan-ordobaev' and phone = '996553807009'",
+            "delete from bank_device_tokens where client_id = 'person-amirhan-ordobaev'",
+            "delete from bank_notifications where client_id = 'person-amirhan-ordobaev'"
         )
 
         var chain: Future<Void> = Future.succeededFuture()
