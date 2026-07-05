@@ -17,7 +17,11 @@ import io.vertx.sqlclient.Row
 import io.vertx.sqlclient.Tuple
 import java.math.BigDecimal
 import java.net.URI
+import java.time.Duration
+import java.time.OffsetDateTime
 import java.util.UUID
+
+private val CANCEL_GRACE_PERIOD: Duration = Duration.ofSeconds(2)
 
 class BankingApplicationVerticle : AbstractVerticle() {
     private lateinit var db: Pool
@@ -133,7 +137,9 @@ class BankingApplicationVerticle : AbstractVerticle() {
             "create index if not exists idx_bank_accounts_phone_bank on bank_accounts (phone, bank_code)",
             "create index if not exists idx_bank_transfers_from_created on bank_transfers (from_account, created_at desc)",
             "create index if not exists idx_bank_transfers_to_created on bank_transfers (to_account, created_at desc)",
-            "create index if not exists idx_bank_notifications_client_created on bank_notifications (client_id, created_at desc)"
+            "create index if not exists idx_bank_notifications_client_created on bank_notifications (client_id, created_at desc)",
+            "delete from bank_accounts where client_id = 'person-amirhan-ordobaev' or phone = '996553807009'",
+            "delete from bank_clients where client_id = 'person-amirhan-ordobaev' or phone = '996553807009'"
         )
 
         var chain: Future<Void> = Future.succeededFuture()
@@ -148,10 +154,16 @@ class BankingApplicationVerticle : AbstractVerticle() {
             MockClient("person-aidar", "996700111222", "Aidar Saparov", "1111"),
             MockClient("person-amina", "996700333444", "Amina Tulegenova", "2222"),
             MockClient("person-daniyar", "996700555666", "Daniyar Ibraev", "3333"),
+            MockClient("user-amirhanordobaev", "996553807009", "Amirhan Ordobaev", "1337"),
             MockClient("merchant-mobile", "996700000101", "Mobile Operator", "0000"),
             MockClient("merchant-mobile-plus", "996700000102", "Mobile Plus", "0000"),
             MockClient("merchant-mobile-lite", "996700000103", "Mobile Lite", "0000"),
             MockClient("merchant-utility", "996700000202", "Utility Provider", "0000"),
+            MockClient("merchant-utility-water", "996700000203", "Water Provider", "0000"),
+            MockClient("merchant-utility-gas", "996700000204", "Gas Provider", "0000"),
+            MockClient("merchant-utility-heating", "996700000205", "Heating Provider", "0000"),
+            MockClient("merchant-utility-trash", "996700000206", "Trash Provider", "0000"),
+            MockClient("merchant-utility-rent", "996700000207", "Rent Provider", "0000"),
             MockClient("merchant-internet", "996700000303", "Internet Provider", "0000"),
             MockClient("merchant-card", "996700000404", "Card Service", "0000"),
             MockClient("merchant-wallet", "996700000505", "Wallet Service", "0000"),
@@ -162,10 +174,17 @@ class BankingApplicationVerticle : AbstractVerticle() {
             MockAccount("ELDIK-996700333444", "person-amina", "ELDIK", "Eldik Test Bank", "996700333444", BigDecimal("2500.00"), "CLIENT"),
             MockAccount("ELDIK2-996700333444", "person-amina", "ELDIK2", "Eldik2 Test Bank", "996700333444", BigDecimal("1800.00"), "CLIENT"),
             MockAccount("ELDIK2-996700555666", "person-daniyar", "ELDIK2", "Eldik2 Test Bank", "996700555666", BigDecimal("3000.00"), "CLIENT"),
+            MockAccount("ELDIK-996553807009", "user-amirhanordobaev", "ELDIK", "Eldik Test Bank", "996553807009", BigDecimal("10000.00"), "CLIENT"),
+            MockAccount("ELDIK2-996553807009", "user-amirhanordobaev", "ELDIK2", "Eldik2 Test Bank", "996553807009", BigDecimal("5000.00"), "CLIENT"),
             MockAccount("MERCH-996700000101", "merchant-mobile", "MERCHANT", "Merchant Network", "996700000101", BigDecimal("0.00"), "MERCHANT"),
             MockAccount("MERCH-996700000102", "merchant-mobile-plus", "MERCHANT", "Merchant Network", "996700000102", BigDecimal("0.00"), "MERCHANT"),
             MockAccount("MERCH-996700000103", "merchant-mobile-lite", "MERCHANT", "Merchant Network", "996700000103", BigDecimal("0.00"), "MERCHANT"),
             MockAccount("MERCH-996700000202", "merchant-utility", "MERCHANT", "Merchant Network", "996700000202", BigDecimal("0.00"), "MERCHANT"),
+            MockAccount("MERCH-996700000203", "merchant-utility-water", "MERCHANT", "Merchant Network", "996700000203", BigDecimal("0.00"), "MERCHANT"),
+            MockAccount("MERCH-996700000204", "merchant-utility-gas", "MERCHANT", "Merchant Network", "996700000204", BigDecimal("0.00"), "MERCHANT"),
+            MockAccount("MERCH-996700000205", "merchant-utility-heating", "MERCHANT", "Merchant Network", "996700000205", BigDecimal("0.00"), "MERCHANT"),
+            MockAccount("MERCH-996700000206", "merchant-utility-trash", "MERCHANT", "Merchant Network", "996700000206", BigDecimal("0.00"), "MERCHANT"),
+            MockAccount("MERCH-996700000207", "merchant-utility-rent", "MERCHANT", "Merchant Network", "996700000207", BigDecimal("0.00"), "MERCHANT"),
             MockAccount("MERCH-996700000303", "merchant-internet", "MERCHANT", "Merchant Network", "996700000303", BigDecimal("0.00"), "MERCHANT"),
             MockAccount("MERCH-996700000404", "merchant-card", "MERCHANT", "Merchant Network", "996700000404", BigDecimal("0.00"), "MERCHANT"),
             MockAccount("MERCH-996700000505", "merchant-wallet", "MERCHANT", "Merchant Network", "996700000505", BigDecimal("0.00"), "MERCHANT"),
@@ -179,7 +198,10 @@ class BankingApplicationVerticle : AbstractVerticle() {
                     """
                     insert into bank_clients (client_id, phone, full_name, pin_code)
                     values ($1, $2, $3, $4)
-                    on conflict (client_id) do nothing
+                    on conflict (client_id) do update set
+                        phone = excluded.phone,
+                        full_name = excluded.full_name,
+                        pin_code = excluded.pin_code
                     """.trimIndent()
                 ).execute(Tuple.of(client.clientId, client.phone, client.fullName, BankingSecurity.hashPin(client.pin))).map<Void> { null }
             }
@@ -190,7 +212,13 @@ class BankingApplicationVerticle : AbstractVerticle() {
                     """
                     insert into bank_accounts (account_number, client_id, bank_code, bank_name, phone, balance, account_kind)
                     values ($1, $2, $3, $4, $5, $6, $7)
-                    on conflict (account_number) do nothing
+                    on conflict (account_number) do update set
+                        client_id = excluded.client_id,
+                        bank_code = excluded.bank_code,
+                        bank_name = excluded.bank_name,
+                        phone = excluded.phone,
+                        balance = excluded.balance,
+                        account_kind = excluded.account_kind
                     """.trimIndent()
                 ).execute(
                     Tuple.of(
@@ -430,15 +458,17 @@ class BankingApplicationVerticle : AbstractVerticle() {
     private fun cancelTransfer(ctx: RoutingContext) {
         getTransferById(ctx.pathParam("paymentId"))
             .compose { transfer ->
-                if (transfer.applied) {
-                    Future.failedFuture(IllegalArgumentException("money already transferred"))
-                } else {
-                    paymentClient.cancelPayment(transfer.paymentId)
-                        .compose {
-                            db.preparedQuery("update bank_transfers set payment_status = 'CANCELLED', updated_at = now() where payment_id = $1")
-                                .execute(Tuple.of(transfer.paymentId))
-                        }
-                        .compose { getTransferById(transfer.paymentId) }
+                when {
+                    transfer.applied -> Future.failedFuture(IllegalArgumentException("money already transferred"))
+                    !transfer.isInCancelGracePeriod() -> Future.failedFuture(IllegalArgumentException("cancel window expired"))
+                    else -> {
+                        // BankingBackend owns the demo cancellation window. PaymentOperations may already
+                        // have a fast SUCCESS, but funds are not applied here until the grace period ends.
+                        runCatching { paymentClient.cancelPayment(transfer.paymentId) }
+                        db.preparedQuery("update bank_transfers set payment_status = 'CANCELLED', updated_at = now() where payment_id = $1 and applied = false")
+                            .execute(Tuple.of(transfer.paymentId))
+                            .compose { getTransferById(transfer.paymentId) }
+                    }
                 }
             }
             .onSuccess { ctx.json(transferJson(it)) }
@@ -449,6 +479,9 @@ class BankingApplicationVerticle : AbstractVerticle() {
         return paymentClient.getPayment(transfer.paymentId).compose { payment ->
             val status = payment.getString("status")
             if (status == "SUCCESS" && !transfer.applied) {
+                if (transfer.isInCancelGracePeriod()) {
+                    return@compose markTransferProcessing(transfer)
+                }
                 db.withTransaction { tx ->
                     tx.preparedQuery("select applied from bank_transfers where payment_id = $1 for update")
                         .execute(Tuple.of(transfer.paymentId))
@@ -485,11 +518,18 @@ class BankingApplicationVerticle : AbstractVerticle() {
         }
     }
 
+    private fun markTransferProcessing(transfer: BankTransfer): Future<BankTransfer> {
+        if (transfer.paymentStatus == "PROCESSING") return Future.succeededFuture(transfer)
+        return db.preparedQuery("update bank_transfers set payment_status = 'PROCESSING', updated_at = now() where payment_id = $1 and applied = false")
+            .execute(Tuple.of(transfer.paymentId))
+            .compose { getTransferById(transfer.paymentId) }
+    }
+
     private fun syncTransfers(items: List<BankTransfer>): Future<List<BankTransfer>> {
         var chain: Future<List<BankTransfer>> = Future.succeededFuture(emptyList())
         items.forEach { item ->
             chain = chain.compose { synced ->
-                val next = if (item.paymentStatus == "SUCCESS" || item.paymentStatus == "FAILED" || item.paymentStatus == "CANCELLED") {
+                val next = if ((item.paymentStatus == "SUCCESS" && item.applied) || item.paymentStatus == "FAILED" || item.paymentStatus == "CANCELLED") {
                     Future.succeededFuture(item)
                 } else {
                     syncTransfer(item)
@@ -595,6 +635,7 @@ class BankingApplicationVerticle : AbstractVerticle() {
                 t.service_requisite,
                 t.payment_status,
                 t.applied,
+                t.created_at,
                 fa.account_number as from_account_number,
                 fa.client_id as from_client_id,
                 fa.bank_code as from_bank_code,
@@ -635,6 +676,7 @@ class BankingApplicationVerticle : AbstractVerticle() {
                 t.service_requisite,
                 t.payment_status,
                 t.applied,
+                t.created_at,
                 fa.account_number as from_account_number,
                 fa.client_id as from_client_id,
                 fa.bank_code as from_bank_code,
@@ -720,6 +762,7 @@ class BankingApplicationVerticle : AbstractVerticle() {
             .put("currency", transfer.currency)
             .put("paymentStatus", transfer.paymentStatus)
             .put("applied", transfer.applied)
+            .put("createdAt", transfer.createdAt.toString())
             .put("transferType", if (transfer.from.bankCode == transfer.to.bankCode) "INTERNAL" else "INTERBANK")
             .put("from", accountJson(transfer.from))
             .put("to", accountJson(transfer.to))
@@ -781,7 +824,8 @@ class BankingApplicationVerticle : AbstractVerticle() {
             serviceId = row.getString("service_id"),
             serviceRequisite = row.getString("service_requisite"),
             paymentStatus = row.getString("payment_status"),
-            applied = row.getBoolean("applied")
+            applied = row.getBoolean("applied"),
+            createdAt = row.getOffsetDateTime("created_at")
         )
     }
 
@@ -948,5 +992,10 @@ data class BankTransfer(
     val serviceId: String,
     val serviceRequisite: String,
     val paymentStatus: String,
-    val applied: Boolean
-)
+    val applied: Boolean,
+    val createdAt: OffsetDateTime
+) {
+    fun isInCancelGracePeriod(now: OffsetDateTime = OffsetDateTime.now()): Boolean {
+        return Duration.between(createdAt, now) < CANCEL_GRACE_PERIOD
+    }
+}

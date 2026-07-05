@@ -63,6 +63,24 @@ class BankingRulesTest {
     }
 
     @Test
+    fun `supports different utility services`() {
+        assertEquals("utility.general", BankingRules.defaultServiceId("UTILITY"))
+        assertEquals("электроэнергия", BankingRules.utilityServiceName("utility.electricity"))
+        assertEquals("вода", BankingRules.utilityServiceName("utility.water"))
+        assertEquals("газ", BankingRules.utilityServiceName("utility.gas"))
+        assertEquals("отопление", BankingRules.utilityServiceName("utility.heating"))
+
+        BankingRules.validateServicePayment("UTILITY", "utility.electricity", "EL-12345678", BigDecimal("120.00"))
+        BankingRules.validateServicePayment("UTILITY", "utility.water", "WATER-12345678", BigDecimal("120.00"))
+        BankingRules.validateServicePayment("UTILITY", "utility.gas", "GAS-12345678", BigDecimal("120.00"))
+        BankingRules.validateServicePayment("UTILITY", "utility.general", "UTIL-12345678", BigDecimal("120.00"))
+
+        assertFailsWith<IllegalArgumentException> {
+            BankingRules.validateServicePayment("UTILITY", "utility.unknown", "UNK-12345678", BigDecimal("120.00"))
+        }
+    }
+
+    @Test
     fun `validates transfer constraints`() {
         BankingRules.validateTransfer(source, target, BigDecimal("10.00"), "KGS")
 

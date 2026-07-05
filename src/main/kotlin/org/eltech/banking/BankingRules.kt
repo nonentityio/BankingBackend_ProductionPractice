@@ -4,6 +4,17 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 
 object BankingRules {
+    private val servicePaymentCategories = setOf("MOBILE_TOPUP", "UTILITY", "CARD_PAYMENT", "WALLET")
+    private val utilityServices = mapOf(
+        "utility.electricity" to ServiceRule("EL", "электроэнергия"),
+        "utility.water" to ServiceRule("WATER", "вода"),
+        "utility.gas" to ServiceRule("GAS", "газ"),
+        "utility.heating" to ServiceRule("HEAT", "отопление"),
+        "utility.trash" to ServiceRule("TRASH", "вывоз мусора"),
+        "utility.rent" to ServiceRule("RENT", "квартплата"),
+        "utility.general" to ServiceRule("UTIL", "коммунальная услуга")
+    )
+
     fun parseAmount(raw: Any?): BigDecimal? {
         val amount = when (raw) {
             is Number -> BigDecimal(raw.toString())
@@ -46,7 +57,7 @@ object BankingRules {
     fun defaultServiceId(category: String): String {
         return when (category.uppercase()) {
             "MOBILE_TOPUP" -> "mobile.topup"
-            "UTILITY" -> "utility.electricity"
+            "UTILITY" -> "utility.general"
             "CARD_PAYMENT" -> "card.repayment"
             "WALLET" -> "wallet.topup"
             else -> "transfer.internal"
@@ -54,11 +65,27 @@ object BankingRules {
     }
 
     fun validateServicePayment(category: String, serviceId: String, requisite: String, amount: BigDecimal) {
-        if (category !in setOf("MOBILE_TOPUP", "UTILITY", "CARD_PAYMENT", "WALLET")) return
+        if (category !in servicePaymentCategories) return
         if (requisite.isBlank()) throw IllegalArgumentException("service requisite is required")
+        if (category == "UTILITY") validateUtilityPayment(serviceId, requisite)
         if (category in setOf("MOBILE_TOPUP", "WALLET") && amount > BigDecimal("100000.00")) {
             throw IllegalArgumentException("amount exceeds 100000.00 limit for top-up service")
         }
+    }
+
+    fun utilityServiceName(serviceId: String): String? {
+        return utilityServices[serviceId.lowercase()]?.title
+    }
+
+    private fun validateUtilityPayment(serviceId: String, requisite: String) {
+        val normalizedServiceId = serviceId.lowercase()
+        val rule = utilityServices[normalizedServiceId]
+            ?: throw IllegalArgumentException("unknown utility service")
+        val normalizedRequisite = requisite.trim().uppercase()
+        val allowed = normalizedRequisite.startsWith("${rule.prefix}-") ||
+            normalizedRequisite.startsWith("${rule.prefix}:") ||
+            normalizedRequisite.filter { it.isLetterOrDigit() }.length >= 6
+        if (!allowed) throw IllegalArgumentException("${rule.title} requisite is invalid")
     }
 
     fun operationClientFor(bankCode: String): String {
@@ -83,3 +110,8 @@ object BankingRules {
         }
     }
 }
+
+private data class ServiceRule(
+    val prefix: String,
+    val title: String
+)
