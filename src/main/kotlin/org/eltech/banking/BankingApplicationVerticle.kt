@@ -465,7 +465,9 @@ class BankingApplicationVerticle : AbstractVerticle() {
                     else -> {
                         // BankingBackend owns the demo cancellation window. PaymentOperations may already
                         // have a fast SUCCESS, but funds are not applied here until the grace period ends.
-                        runCatching { paymentClient.cancelPayment(transfer.paymentId) }
+                        paymentClient.cancelPayment(transfer.paymentId).onFailure {
+                            println("PaymentOperations cancel ignored for ${transfer.paymentId}: ${it.message}")
+                        }
                         db.preparedQuery("update bank_transfers set payment_status = 'CANCELLED', updated_at = now() where payment_id = $1 and applied = false")
                             .execute(Tuple.of(transfer.paymentId))
                             .compose { getTransferById(transfer.paymentId) }
@@ -477,6 +479,8 @@ class BankingApplicationVerticle : AbstractVerticle() {
     }
 
     private fun syncTransfer(transfer: BankTransfer): Future<BankTransfer> {
+        if (!shouldSyncRemoteStatus(transfer)) return Future.succeededFuture(transfer)
+
         return paymentClient.getPayment(transfer.paymentId).compose { payment ->
             val status = payment.getString("status")
             if (status == "SUCCESS" && !transfer.applied) {
@@ -484,11 +488,12 @@ class BankingApplicationVerticle : AbstractVerticle() {
                     return@compose markTransferProcessing(transfer)
                 }
                 db.withTransaction { tx ->
-                    tx.preparedQuery("select applied from bank_transfers where payment_id = $1 for update")
+                    tx.preparedQuery("select applied, payment_status from bank_transfers where payment_id = $1 for update")
                         .execute(Tuple.of(transfer.paymentId))
                         .compose { locked ->
                             val alreadyApplied = locked.firstOrNull()?.getBoolean("applied") ?: true
-                            if (alreadyApplied) {
+                            val lockedStatus = locked.firstOrNull()?.getString("payment_status")
+                            if (alreadyApplied || lockedStatus == "CANCELLED") {
                                 Future.succeededFuture(false)
                             } else {
                                 tx.preparedQuery("update bank_accounts set balance = balance - $1 where account_number = $2")
@@ -498,7 +503,7 @@ class BankingApplicationVerticle : AbstractVerticle() {
                                             .execute(Tuple.of(transfer.amount, transfer.to.accountNumber))
                                     }
                                     .compose {
-                                        tx.preparedQuery("update bank_transfers set payment_status = $1, applied = true, updated_at = now() where payment_id = $2")
+                                        tx.preparedQuery("update bank_transfers set payment_status = $1, applied = true, updated_at = now() where payment_id = $2 and payment_status <> 'CANCELLED'")
                                             .execute(Tuple.of(status, transfer.paymentId))
                                     }
                                     .map(true)
@@ -530,7 +535,7 @@ class BankingApplicationVerticle : AbstractVerticle() {
         var chain: Future<List<BankTransfer>> = Future.succeededFuture(emptyList())
         items.forEach { item ->
             chain = chain.compose { synced ->
-                val next = if ((item.paymentStatus == "SUCCESS" && item.applied) || item.paymentStatus == "FAILED" || item.paymentStatus == "CANCELLED") {
+                val next = if (!shouldSyncRemoteStatus(item) || (item.paymentStatus == "SUCCESS" && item.applied) || item.paymentStatus == "FAILED") {
                     Future.succeededFuture(item)
                 } else {
                     syncTransfer(item)
@@ -999,4 +1004,8 @@ data class BankTransfer(
     fun isInCancelGracePeriod(now: OffsetDateTime = OffsetDateTime.now()): Boolean {
         return Duration.between(createdAt, now) < CANCEL_GRACE_PERIOD
     }
+}
+
+internal fun shouldSyncRemoteStatus(transfer: BankTransfer): Boolean {
+    return transfer.paymentStatus != "CANCELLED"
 }
