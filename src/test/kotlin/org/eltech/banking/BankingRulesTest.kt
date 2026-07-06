@@ -69,11 +69,15 @@ class BankingRulesTest {
         assertEquals("вода", BankingRules.utilityServiceName("utility.water"))
         assertEquals("газ", BankingRules.utilityServiceName("utility.gas"))
         assertEquals("отопление", BankingRules.utilityServiceName("utility.heating"))
+        assertEquals("домашний интернет", BankingRules.utilityServiceName("internet.home"))
+        assertEquals("тестовая ошибка интернета", BankingRules.utilityServiceName("internet.failed"))
 
         BankingRules.validateServicePayment("UTILITY", "utility.electricity", "EL-12345678", BigDecimal("120.00"))
         BankingRules.validateServicePayment("UTILITY", "utility.water", "WATER-12345678", BigDecimal("120.00"))
         BankingRules.validateServicePayment("UTILITY", "utility.gas", "GAS-12345678", BigDecimal("120.00"))
         BankingRules.validateServicePayment("UTILITY", "utility.general", "UTIL-12345678", BigDecimal("120.00"))
+        BankingRules.validateServicePayment("UTILITY", "internet.home", "NET-12345678", BigDecimal("120.00"))
+        BankingRules.validateServicePayment("UTILITY", "internet.failed", "NET-FAIL-12345678", BigDecimal("120.00"))
 
         assertFailsWith<IllegalArgumentException> {
             BankingRules.validateServicePayment("UTILITY", "utility.unknown", "UNK-12345678", BigDecimal("120.00"))

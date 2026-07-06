@@ -12,7 +12,9 @@ object BankingRules {
         "utility.heating" to ServiceRule("HEAT", "отопление"),
         "utility.trash" to ServiceRule("TRASH", "вывоз мусора"),
         "utility.rent" to ServiceRule("RENT", "квартплата"),
-        "utility.general" to ServiceRule("UTIL", "коммунальная услуга")
+        "utility.general" to ServiceRule("UTIL", "коммунальная услуга"),
+        "internet.home" to ServiceRule("NET", "домашний интернет"),
+        "internet.failed" to ServiceRule("NET-FAIL", "тестовая ошибка интернета")
     )
 
     fun parseAmount(raw: Any?): BigDecimal? {
