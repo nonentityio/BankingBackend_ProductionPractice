@@ -463,13 +463,11 @@ class BankingApplicationVerticle : AbstractVerticle() {
                     transfer.applied -> Future.failedFuture(IllegalArgumentException("money already transferred"))
                     !transfer.isInCancelGracePeriod() -> Future.failedFuture(IllegalArgumentException("cancel window expired"))
                     else -> {
-                        // BankingBackend owns the demo cancellation window. PaymentOperations may already
-                        // have a fast SUCCESS, but funds are not applied here until the grace period ends.
-                        paymentClient.cancelPayment(transfer.paymentId).onFailure {
-                            println("PaymentOperations cancel ignored for ${transfer.paymentId}: ${it.message}")
-                        }
-                        db.preparedQuery("update bank_transfers set payment_status = 'CANCELLED', updated_at = now() where payment_id = $1 and applied = false")
-                            .execute(Tuple.of(transfer.paymentId))
+                        paymentClient.cancelPayment(transfer.paymentId)
+                            .compose {
+                                db.preparedQuery("update bank_transfers set payment_status = 'CANCELLED', updated_at = now() where payment_id = $1 and applied = false")
+                                    .execute(Tuple.of(transfer.paymentId))
+                            }
                             .compose { getTransferById(transfer.paymentId) }
                     }
                 }
