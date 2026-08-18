@@ -87,6 +87,7 @@ class BankingApplicationVerticle : AbstractVerticle() {
                 phone varchar(32) not null,
                 currency varchar(3) not null default 'KGS',
                 balance numeric(18, 2) not null,
+                opening_balance numeric(18, 2) not null,
                 account_kind varchar(30) not null default 'CLIENT',
                 created_at timestamptz not null default now(),
                 unique (phone, bank_code)
@@ -132,6 +133,7 @@ class BankingApplicationVerticle : AbstractVerticle() {
             )
             """.trimIndent(),
             "alter table bank_clients alter column pin_code type varchar(128)",
+            "alter table bank_accounts add column if not exists opening_balance numeric(18, 2)",
             "alter table bank_transfers add column if not exists service_id varchar(80) not null default 'transfer.internal'",
             "alter table bank_transfers add column if not exists service_requisite varchar(160) not null default ''",
             "create index if not exists idx_bank_accounts_phone_bank on bank_accounts (phone, bank_code)",
@@ -147,7 +149,7 @@ class BankingApplicationVerticle : AbstractVerticle() {
         statements.forEach { sql ->
             chain = chain.compose { db.query(sql).execute().map<Void> { null } }
         }
-        return chain.compose { seedMockData() }
+        return chain.compose { seedMockData() }.compose { restoreBalancesFromLedger() }
     }
 
     private fun seedMockData(): Future<Void> {
@@ -211,14 +213,14 @@ class BankingApplicationVerticle : AbstractVerticle() {
             chain = chain.compose {
                 db.preparedQuery(
                     """
-                    insert into bank_accounts (account_number, client_id, bank_code, bank_name, phone, balance, account_kind)
-                    values ($1, $2, $3, $4, $5, $6, $7)
+                    insert into bank_accounts (account_number, client_id, bank_code, bank_name, phone, balance, opening_balance, account_kind)
+                    values ($1, $2, $3, $4, $5, $6, $6, $7)
                     on conflict (account_number) do update set
                         client_id = excluded.client_id,
                         bank_code = excluded.bank_code,
                         bank_name = excluded.bank_name,
                         phone = excluded.phone,
-                        balance = excluded.balance,
+                        opening_balance = excluded.opening_balance,
                         account_kind = excluded.account_kind
                     """.trimIndent()
                 ).execute(
@@ -235,6 +237,27 @@ class BankingApplicationVerticle : AbstractVerticle() {
             }
         }
         return chain
+    }
+
+    private fun restoreBalancesFromLedger(): Future<Void> {
+        val inferMissingOpeningBalances = """
+            update bank_accounts a
+            set opening_balance = a.balance
+                - coalesce((select sum(t.amount) from bank_transfers t where t.to_account = a.account_number and t.applied), 0)
+                + coalesce((select sum(t.amount) from bank_transfers t where t.from_account = a.account_number and t.applied), 0)
+            where a.opening_balance is null
+        """.trimIndent()
+        val restoreCurrentBalances = """
+            update bank_accounts a
+            set balance = a.opening_balance
+                + coalesce((select sum(t.amount) from bank_transfers t where t.to_account = a.account_number and t.applied), 0)
+                - coalesce((select sum(t.amount) from bank_transfers t where t.from_account = a.account_number and t.applied), 0)
+            where a.opening_balance is not null
+        """.trimIndent()
+        return db.query(inferMissingOpeningBalances).execute()
+            .compose { db.query(restoreCurrentBalances).execute() }
+            .compose { db.query("alter table bank_accounts alter column opening_balance set not null").execute() }
+            .map<Void> { null }
     }
 
     private fun health(ctx: RoutingContext) {
@@ -320,8 +343,8 @@ class BankingApplicationVerticle : AbstractVerticle() {
             .compose {
                 db.preparedQuery(
                     """
-                    insert into bank_accounts (account_number, client_id, bank_code, bank_name, phone, balance)
-                    values ($1, $2, $3, $4, $5, $6)
+                    insert into bank_accounts (account_number, client_id, bank_code, bank_name, phone, balance, opening_balance)
+                    values ($1, $2, $3, $4, $5, $6, $6)
                     """.trimIndent()
                 ).execute(Tuple.of(accountNumber, clientId, bankCode, bankName, phone, BigDecimal("1000.00")))
             }
@@ -337,7 +360,9 @@ class BankingApplicationVerticle : AbstractVerticle() {
     }
 
     private fun listClientTransfers(ctx: RoutingContext) {
-        transfersByClient(ctx.pathParam("clientId"))
+        val limit = ctx.queryParam("limit").firstOrNull()?.toIntOrNull()?.coerceIn(1, 2_000) ?: 200
+        val offset = ctx.queryParam("offset").firstOrNull()?.toIntOrNull()?.coerceAtLeast(0) ?: 0
+        transfersByClient(ctx.pathParam("clientId"), limit, offset)
             .compose(::syncTransfers)
             .onSuccess { ctx.json(JsonObject().put("items", JsonArray(it.map(::transferJson)))) }
             .onFailure { fail(ctx, 500, it.message ?: "transfers unavailable") }
@@ -668,7 +693,7 @@ class BankingApplicationVerticle : AbstractVerticle() {
         }
     }
 
-    private fun transfersByClient(clientId: String): Future<List<BankTransfer>> {
+    private fun transfersByClient(clientId: String, limit: Int, offset: Int): Future<List<BankTransfer>> {
         return db.preparedQuery(
             """
             select
@@ -706,9 +731,9 @@ class BankingApplicationVerticle : AbstractVerticle() {
               and fa.bank_code not in ('CITY', 'NOVA')
               and ta.bank_code not in ('CITY', 'NOVA')
             order by t.created_at desc
-            limit 50
+            limit $2 offset $3
             """.trimIndent()
-        ).execute(Tuple.of(clientId)).map { rows -> rows.map(::transferFromRow) }
+        ).execute(Tuple.of(clientId, limit, offset)).map { rows -> rows.map(::transferFromRow) }
     }
 
     private fun createTransferNotifications(transfer: BankTransfer): Future<Void> {
@@ -856,8 +881,17 @@ class BankingApplicationVerticle : AbstractVerticle() {
         return PgBuilder.pool()
             .using(vertx)
             .connectingTo(options)
-            .with(PoolOptions().setMaxSize(8))
+            .with(
+                PoolOptions()
+                    .setMaxSize(pgPoolSize())
+                    .setMaxWaitQueueSize(System.getenv("PG_WAIT_QUEUE_SIZE")?.toIntOrNull() ?: 1024)
+            )
             .build()
+    }
+
+    private fun pgPoolSize(): Int {
+        val fallback = if (System.getenv("DYNO") != null) 6 else 8
+        return System.getenv("PG_POOL_SIZE")?.toIntOrNull() ?: fallback
     }
 
     private fun parseAmount(body: JsonObject): BigDecimal? {

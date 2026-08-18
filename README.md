@@ -33,6 +33,45 @@ build/install/BankingBackend/bin/BankingBackend
 
 On Heroku, `DATABASE_URL` is provided by Heroku Postgres.
 
+## Heroku Cost Control
+
+The default Heroku database pool is smaller than the local one, but it is still enough for the demo banking flow.
+This reduces idle database connections without slowing down the active payment scenario.
+
+Recommended config:
+
+```bash
+heroku config:set \
+  PG_POOL_SIZE=6 \
+  PG_WAIT_QUEUE_SIZE=1024 \
+  JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75 -XX:+UseStringDeduplication" \
+  -a <banking-backend-app>
+```
+
+Before a live demonstration:
+
+```bash
+heroku ps:scale web=1 -a <banking-backend-app>
+```
+
+When the stand is not needed:
+
+```bash
+heroku ps:scale web=0 -a <banking-backend-app>
+```
+
+For a short load test, temporarily raise the pool:
+
+```bash
+heroku config:set PG_POOL_SIZE=10 -a <banking-backend-app>
+```
+
+After the load test:
+
+```bash
+heroku config:set PG_POOL_SIZE=6 -a <banking-backend-app>
+```
+
 ## API
 
 Login:
