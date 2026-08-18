@@ -48,6 +48,7 @@ class BankingApplicationVerticle : AbstractVerticle() {
         router.get("/banks").handler(::banks)
         router.post("/auth/login").handler(::login)
         router.post("/clients/register").handler(::registerClient)
+        router.post("/clients/:clientId/pin").handler(::changePin)
         router.get("/clients/:clientId/accounts").handler(::listClientAccounts)
         router.get("/clients/:clientId/transfers").handler(::listClientTransfers)
         router.get("/clients/:clientId/notifications").handler(::listNotifications)
@@ -351,6 +352,40 @@ class BankingApplicationVerticle : AbstractVerticle() {
             .compose { getAccountByNumber(accountNumber) }
             .onSuccess { ctx.response().setStatusCode(201).putHeader("content-type", "application/json").end(accountJson(it).encode()) }
             .onFailure { fail(ctx, 409, it.message ?: "registration failed") }
+    }
+
+    private fun changePin(ctx: RoutingContext) {
+        val clientId = ctx.pathParam("clientId")
+        val body = ctx.body().asJsonObject() ?: JsonObject()
+        val currentPin = body.getString("currentPin")?.trim().orEmpty()
+        val newPin = body.getString("newPin")?.trim().orEmpty()
+        if (!BankingSecurity.pinLooksValid(currentPin) || !BankingSecurity.pinLooksValid(newPin)) {
+            fail(ctx, 400, "currentPin and newPin must contain 4 to 6 digits")
+            return
+        }
+        if (currentPin == newPin) {
+            fail(ctx, 400, "new pin must differ from current pin")
+            return
+        }
+
+        db.preparedQuery("select pin_code from bank_clients where client_id = $1")
+            .execute(Tuple.of(clientId))
+            .compose { rows ->
+                val storedPin = rows.firstOrNull()?.getString("pin_code")
+                    ?: return@compose Future.failedFuture<Void>(IllegalArgumentException("client not found"))
+                if (!BankingSecurity.verifyPin(currentPin, storedPin)) {
+                    Future.failedFuture(IllegalArgumentException("current pin is incorrect"))
+                } else {
+                    db.preparedQuery("update bank_clients set pin_code = $1 where client_id = $2")
+                        .execute(Tuple.of(BankingSecurity.hashPin(newPin), clientId))
+                        .mapEmpty()
+                }
+            }
+            .onSuccess { ctx.json(JsonObject().put("status", "PIN_CHANGED")) }
+            .onFailure {
+                val status = if (it.message == "current pin is incorrect") 401 else 404
+                fail(ctx, status, it.message ?: "pin change failed")
+            }
     }
 
     private fun listClientAccounts(ctx: RoutingContext) {
