@@ -440,7 +440,11 @@ class BankingApplicationVerticle : AbstractVerticle() {
         val currency = body.getString("currency")?.trim()?.uppercase() ?: "KGS"
         val category = body.getString("category")?.trim()?.uppercase() ?: "TRANSFER"
         val serviceId = body.getString("serviceId")?.trim().orEmpty().ifBlank { BankingRules.defaultServiceId(category) }
-        val serviceRequisite = body.getString("serviceRequisite")?.trim().orEmpty()
+        val serviceRequisite = BankingRules.normalizeServiceRequisite(
+            category,
+            serviceId,
+            body.getString("serviceRequisite").orEmpty()
+        )
         val amount = parseAmount(body)
 
         if (fromAccount.isBlank() || amount == null) {

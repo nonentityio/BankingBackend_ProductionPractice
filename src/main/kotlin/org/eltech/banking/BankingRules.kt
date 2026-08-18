@@ -75,6 +75,20 @@ object BankingRules {
         }
     }
 
+    fun normalizeServiceRequisite(category: String, serviceId: String, raw: String): String {
+        val value = raw.trim()
+        return when (category.uppercase()) {
+            "MOBILE_TOPUP" -> normalizeServicePhone(value)
+            "UTILITY" -> normalizeUtilityRequisite(serviceId, value)
+            "CARD_PAYMENT" -> value.filter(Char::isDigit)
+            "WALLET" -> {
+                val payload = value.uppercase().removePrefix("WAL-").filter(Char::isLetterOrDigit)
+                "WAL-$payload"
+            }
+            else -> value
+        }
+    }
+
     fun utilityServiceName(serviceId: String): String? {
         return utilityServices[serviceId.lowercase()]?.title
     }
@@ -88,6 +102,24 @@ object BankingRules {
             normalizedRequisite.startsWith("${rule.prefix}:") ||
             normalizedRequisite.filter { it.isLetterOrDigit() }.length >= 6
         if (!allowed) throw IllegalArgumentException("${rule.title} requisite is invalid")
+    }
+
+    private fun normalizeServicePhone(value: String): String {
+        val digits = value.filter(Char::isDigit)
+        return when {
+            digits.startsWith("996") -> digits
+            digits.length == 10 && digits.startsWith("0") -> "996${digits.drop(1)}"
+            digits.length == 9 -> "996$digits"
+            else -> digits
+        }
+    }
+
+    private fun normalizeUtilityRequisite(serviceId: String, value: String): String {
+        val rule = utilityServices[serviceId.lowercase()] ?: return value.uppercase()
+        val upper = value.uppercase().replace(':', '-')
+        val expectedPrefix = "${rule.prefix}-"
+        if (upper.startsWith(expectedPrefix)) return expectedPrefix + upper.removePrefix(expectedPrefix).filter(Char::isDigit)
+        return expectedPrefix + upper.filter(Char::isDigit)
     }
 
     fun operationClientFor(bankCode: String): String {

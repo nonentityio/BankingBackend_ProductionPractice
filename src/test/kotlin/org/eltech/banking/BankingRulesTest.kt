@@ -85,6 +85,15 @@ class BankingRulesTest {
     }
 
     @Test
+    fun `normalizes friendly service requisites before payment operations`() {
+        assertEquals("996222044422", BankingRules.normalizeServiceRequisite("MOBILE_TOPUP", "mobile.operator", "+996 (222) 044-422"))
+        assertEquals("EL-12345678", BankingRules.normalizeServiceRequisite("UTILITY", "utility.electricity", "1234 5678"))
+        assertEquals("NET-12345678", BankingRules.normalizeServiceRequisite("UTILITY", "internet.home", "NET: 1234 5678"))
+        assertEquals("4111111111111111", BankingRules.normalizeServiceRequisite("CARD_PAYMENT", "card.repayment", "4111 1111 1111 1111"))
+        assertEquals("WAL-ABC12345", BankingRules.normalizeServiceRequisite("WALLET", "wallet.topup", "abc-12345"))
+    }
+
+    @Test
     fun `validates transfer constraints`() {
         BankingRules.validateTransfer(source, target, BigDecimal("10.00"), "KGS")
 
